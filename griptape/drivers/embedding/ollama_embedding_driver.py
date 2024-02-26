@@ -2,47 +2,36 @@ from __future__ import annotations
 from typing import Optional
 from attr import define, field, Factory
 from griptape.drivers import BaseEmbeddingDriver
-from griptape.tokenizers import OpenAiTokenizer
-import ollama.embeddings
+from griptape.tokenizers import OllamaTokenizer
+import requests
+import json
 
 
 @define
-class OpenAiEmbeddingDriver(BaseEmbeddingDriver):
+class OllamaEmbeddingDriver(BaseEmbeddingDriver):
     """
     Attributes:
-        model: OpenAI embedding model name. Defaults to `text-embedding-ada-002`.
-        base_url: API URL. Defaults to OpenAI's v1 API URL.
-        api_key: Not required for this class..
-        organization: OpenAI organization. Defaults to 'OPENAI_ORGANIZATION' environment variable.
-        tokenizer: Optionally provide custom `OpenAiTokenizer`.
-        client: Optionally provide custom `openai.OpenAI` client.
-        azure_deployment: An Azure OpenAi deployment id.
-        azure_endpoint: An Azure OpenAi endpoint.
-        azure_ad_token: An optional Azure Active Directory token.
-        azure_ad_token_provider: An optional Azure Active Directory token provider.
-        api_version: An Azure OpenAi API version.
+        model: Ollama embedding model name. Defaults to `nomic-embed-text`.
+        base_url: API URL. Defaults to local Ollama API URL.
+        tokenizer: Optionally provide custom `OllamaTokenizer`.
     """
 
     DEFAULT_MODEL = "nomic-embed-text"
+    DEFAULT_BASE_URL = "http://localhost:11434/api/embeddings"
 
     model: str = field(default=DEFAULT_MODEL, kw_only=True, metadata={"serializable": True})
-    base_url: Optional[str] = field(default=None, kw_only=True, metadata={"serializable": True})
-    organization: Optional[str] = field(default=None, kw_only=True, metadata={"serializable": True})
-    client: openai.OpenAI = field(
-        default=Factory(
-            lambda self: openai.OpenAI(base_url=self.base_url, organization=self.organization), takes_self=True
-        )
-    )
-    tokenizer: OpenAiTokenizer = field(
-        default=Factory(lambda self: OpenAiTokenizer(model=self.model), takes_self=True), kw_only=True
-    )
+    base_url: Optional[str] = field(default=DEFAULT_BASE_URL, kw_only=True, metadata={"serializable": True})
+    tokenizer: OllamaTokenizer = field(default=Factory(OllamaTokenizer, takes_self=False), kw_only=True)
 
     def try_embed_chunk(self, chunk: str) -> list[float]:
-        # Address a performance issue in older ada models
-        # https://github.com/openai/openai-python/issues/418#issuecomment-1525939500
-        if self.model.endswith("001"):
-            chunk = chunk.replace("\n", " ")
-        return self.client.embeddings.create(**self._params(chunk)).data[0].embedding
+        response = requests.post(
+            self.base_url,
+            data=json.dumps({"model": self.model, "prompt": chunk}),
+            headers={"Content-Type": "application/json"},
+        )
 
-    def _params(self, chunk: str) -> dict:
-        return {"input": chunk, "model": self.model}
+        if response.status_code != 200:
+            raise Exception(f"Failed to get embeddings: {response.text}")
+
+        embeddings = response.json().get("embedding", [])
+        return embeddings.to_list()
